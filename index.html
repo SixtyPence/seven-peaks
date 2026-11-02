@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Seven Peaks Challenge</title>
-<meta name="description" content="Together we climb the height of the world's seven highest mountains in five days.">
+<meta name="description" content="Together we climb the height of the highest mountain on each of the seven continents in five days.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23142440'/%3E%3Cpath d='M3 27 13 8l5 9 3-5 8 15z' fill='%23ff7a93'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="styles.css">
@@ -31,7 +31,7 @@
       <p class="gate-error" id="gate-error" role="alert" hidden></p>
     </form>
   </div>
-  <svg class="gate-ridge" viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true"><path id="gate-ridge-path"></path></svg>
+  <svg class="gate-ridge" viewBox="0 0 1060 240" preserveAspectRatio="none" aria-hidden="true"><path id="gate-far-path" class="ridge-far"></path><path id="gate-ridge-path" class="ridge-rock"></path></svg>
 </section>
 
 <div id="app" hidden>
@@ -52,22 +52,41 @@
         <p class="readout-caption" id="goal-caption">climbed so far</p>
       </div>
       <dl class="readout-side">
-        <div><dt id="next-label">Next summit</dt><dd id="next-summit">Dhaulagiri</dd><dd class="readout-detail" id="next-detail"></dd></div>
+        <div><dt id="next-label">Next summit</dt><dd id="next-summit"></dd><dd class="readout-detail" id="next-detail"></dd></div>
         <div id="pace-block" hidden><dt>Pace</dt><dd id="pace-main"></dd><dd class="readout-detail" id="pace-detail"></dd></div>
       </dl>
     </div>
 
     <div class="climb" id="climb">
       <div class="ridge" aria-hidden="true">
-        <svg id="ridge-base" viewBox="0 0 1000 200" preserveAspectRatio="none"><path id="ridge-base-path"></path></svg>
-        <svg id="ridge-fill" viewBox="0 0 1000 200" preserveAspectRatio="none">
-          <defs><linearGradient id="alpenglow" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="var(--glow-high)"></stop>
-            <stop offset="1" stop-color="var(--glow-low)"></stop>
-          </linearGradient></defs>
+        <svg id="ridge-base" viewBox="0 0 1060 240" preserveAspectRatio="none">
+          <path id="ridge-far-path" class="ridge-far"></path>
+          <path id="ridge-base-path" class="ridge-rock"></path>
+          <path id="ridge-base-caps" class="ridge-caps"></path>
+          <path id="ridge-base-shade" class="ridge-shade"></path>
+        </svg>
+        <svg id="ridge-fill" viewBox="0 0 1060 240" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="alpenglow" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="var(--glow-high)"></stop>
+              <stop offset="1" stop-color="var(--glow-low)"></stop>
+            </linearGradient>
+            <linearGradient id="shadow-fade" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="240">
+              <stop offset="0" stop-color="var(--shadow)" stop-opacity=".42"></stop>
+              <stop offset="1" stop-color="var(--shadow)" stop-opacity="0"></stop>
+            </linearGradient>
+          </defs>
           <path id="ridge-fill-path" fill="url(#alpenglow)"></path>
+          <path id="ridge-fill-caps" class="ridge-glow-caps"></path>
+          <path id="ridge-fill-shade" class="ridge-shade"></path>
         </svg>
         <div class="summit-ticks" id="summit-ticks"></div>
+        <div id="summits"></div>
+        <div class="climber" id="climber">
+          <span class="climber-line"></span>
+          <span class="climber-dot"></span>
+          <span class="climber-label">The group</span>
+        </div>
       </div>
       <div class="bar" id="bar" role="progressbar" aria-valuemin="0" aria-label="Meters climbed by the group">
         <div class="bar-fill" id="bar-fill"></div>
@@ -145,11 +164,11 @@
     </div>
 
     <fieldset class="field">
-      <legend>Add to the map <span class="optional">(optional, for longer trips)</span></legend>
+      <legend>Add to the map <span class="optional">(optional)</span></legend>
       <div class="choice" id="map-choice">
         <label><input type="radio" name="map-mode" value="none" checked><span>Skip</span></label>
-        <label><input type="radio" name="map-mode" value="gpx"><span>GPX file</span></label>
         <label><input type="radio" name="map-mode" value="pin"><span>Pick a place</span></label>
+        <label><input type="radio" name="map-mode" value="gpx"><span>GPX file</span></label>
       </div>
     </fieldset>
 
@@ -160,6 +179,11 @@
       <button class="button button-quiet" id="gpx-use" type="button" hidden></button>
     </div>
 
+    <div class="field" id="place-choice-field" hidden>
+      <label for="place-choice">Where?</label>
+      <select id="place-choice"></select>
+    </div>
+
     <div class="field" id="pin-field" hidden>
       <p class="hint" id="pin-status">Tap the map to place your pin.</p>
       <div class="pin-map" id="pin-map"></div>
@@ -167,7 +191,7 @@
 
     <div class="field" id="place-field" hidden>
       <label for="place">Name of the place or trip</label>
-      <input id="place" type="text" maxlength="80" placeholder="Zugspitze">
+      <input id="place" type="text" maxlength="80" placeholder="Evening hill walk">
     </div>
 
     <p class="form-error" id="form-error" role="alert" hidden></p>

@@ -135,7 +135,7 @@ window.PeaksStore = (function () {
     };
   }
 
-  function createDemoStore() {
+  function createDemoStore(config) {
     const iso = (date) => date.toISOString().slice(0, 10);
     const now = new Date();
     const utcToday = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
@@ -189,11 +189,16 @@ window.PeaksStore = (function () {
         tracks.push({ entry_id: entry.id, points });
       }
     }
-    addTrip(0, 2150, -2, "Zugspitze", 47.40, 10.96, 0.03);
-    addTrip(3, 1820, -1, "Watzmann", 47.53, 12.92, 0.03);
-    addTrip(8, 1400, -1, "Säntis", 47.25, 9.34, 0.022);
-    addTrip(12, 1180, 0, "Großglockner", 47.07, 12.69, null);
-    addTrip(20, 960, -2, "Grintovec", 46.36, 14.54, null);
+    addTrip(0, 1150, -2, "Forest loop", 63.700, 23.000, 0.02);
+    addTrip(3, 980, -1, "Ridge walk", 63.735, 23.070, 0.018);
+    addTrip(20, 640, -2, "Cabin hill", 63.710, 23.020, null);
+    // Several climbs at each ready-made location, as there will be in real use.
+    (config.places || []).forEach((place, p) => {
+      for (let n = 0; n < 5 - p; n++) {
+        addTrip((p * 7 + n * 5) % 36, 180 + Math.round(random() * 12) * 10, -Math.floor(random() * 3),
+          place.name, place.lat, place.lng, null);
+      }
+    });
 
     const ownTokens = new Set();
 
@@ -253,7 +258,7 @@ window.PeaksStore = (function () {
     create(config) {
       return config.supabaseUrl && config.supabaseKey
         ? createSupabaseStore(config)
-        : createDemoStore();
+        : createDemoStore(config);
     },
   };
 })();

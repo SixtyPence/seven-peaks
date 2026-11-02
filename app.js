@@ -82,59 +82,186 @@
 
 
   // ---------- The ridge drawing ----------
-  // Every summit sits exactly where its cumulative total falls on the bar below.
-  // The small bumps are fixed offsets, so the shape is the same on every load.
-  function ridgePath() {
-    const H = 200;
-    const scaleY = (height) => H - (height / 8849) * (H - 10);
-    const toX = (meters) => (meters / GOAL) * 1000;
-    const bumps = [[0.3, 0.42], [0.52, 0.66], [0.72, 0.74], [0.86, 0.9]];
-    let d = `M0 ${H} L0 ${H * 0.82}`;
-    let previous = 0;
-    peaks.forEach((peak, i) => {
-      const x0 = toX(previous);
-      const x1 = toX(peak.cumulative);
-      const w = x1 - x0;
-      const top = scaleY(peak.height);
-      const col = H * (0.62 + ((i * 3) % 5) * 0.035);
-      if (i > 0) d += ` L${(x0 + w * 0.12).toFixed(1)} ${col.toFixed(1)}`;
-      bumps.forEach(([along, up], b) => {
-        const wobble = ((i + b) % 2 === 0 ? 1 : -1) * 5;
-        const y = col + (top - col) * up + wobble;
-        d += ` L${(x0 + w * along).toFixed(1)} ${y.toFixed(1)}`;
-      });
-      d += ` L${x1.toFixed(1)} ${top.toFixed(1)}`;
-      previous = peak.cumulative;
-    });
-    return d + ` L1000 ${H} Z`;
+  // The ridge is drawn to scale in both directions. Each summit sits exactly where
+  // the group reaches it on the bar below, and its height is true relative to the
+  // others. Only the small crags on the way up are made up.
+  const RIDGE_W = 1060;     // drawing width. Past the goal, the ridge falls away.
+  const RIDGE_GOAL_X = 1000; // where the goal sits in the drawing, and so the end of the bar
+  const RIDGE_H = 240;
+
+  // A repeatable random generator: same seed, same mountains on every device.
+  function seededRandom(seed) {
+    return () => (seed = (seed * 16807) % 2147483647) / 2147483647;
   }
 
+  // Midpoint displacement, a classic way to draw mountains. Take a straight line,
+  // nudge its middle up or down, then repeat on both halves with smaller nudges.
+  // Big features and small crags appear at once, with very little code.
+  function roughen(start, end, random, highestY, rounds = 4) {
+    let points = [start, end];
+    for (let round = 0; round < rounds; round++) {
+      const next = [points[0]];
+      for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1], b = points[i];
+        const span = b.x - a.x;
+        next.push({
+          x: a.x + span * (0.4 + random() * 0.2),
+          y: Math.min(RIDGE_H, Math.max(highestY, (a.y + b.y) / 2 + (random() - 0.5) * span * 0.3)),
+        }, b);
+      }
+      points = next;
+    }
+    return points;
+  }
+
+  const outlineToPath = (points, close = true) =>
+    "M" + points.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" L") + (close ? " Z" : "");
+  const toGround = (line) => outlineToPath([{ x: 0, y: RIDGE_H }, ...line, { x: RIDGE_W, y: RIDGE_H }]);
+
+  function buildRidge() {
+    const H = RIDGE_H;
+    const random = seededRandom(20261109);
+    const heights = peaks.map((p) => p.height);
+    const tallest = Math.max(...heights);
+    const lowest = Math.min(...heights) / tallest;
+    const toY = (share) => H - share * (H - 4); // share of the tallest peak's height -> drawing position
+
+    // The main ridge line, as points running left to right.
+    const line = [{ x: 0, y: H * 0.9 }];
+    const extend = (end, highestY) => line.push(...roughen(line[line.length - 1], end, random, highestY).slice(1));
+    const summits = [];
+    let previous = 0;
+
+    peaks.forEach((peak, i) => {
+      const x0 = (previous / GOAL) * RIDGE_GOAL_X;
+      const x1 = (peak.cumulative / GOAL) * RIDGE_GOAL_X;
+      const y = toY(peak.height / tallest);
+      if (i > 0) {
+        // A col is the low pass between two peaks, well below the lower of them.
+        const lowerPeak = Math.min(peak.height, peaks[i - 1].height) / tallest;
+        const colY = toY(lowerPeak * (0.42 + random() * 0.16));
+        extend({ x: x0 + (x1 - x0) * (0.3 + random() * 0.12), y: colY }, summits[i - 1].y + 3);
+        summits[i - 1].colIndex = line.length - 1;
+      }
+      const from = line[line.length - 1];
+      extend({
+        x: from.x + (x1 - from.x) * (0.55 + random() * 0.2),
+        y: from.y + (y - from.y) * (0.58 + random() * 0.14),
+      }, y + 3);
+      extend({ x: x1, y }, y + 3);
+      summits.push({ x: x1, y, index: line.length - 1 });
+      previous = peak.cumulative;
+    });
+
+    const last = summits[summits.length - 1];
+    extend({ x: RIDGE_W, y: H * 0.68 }, last.y + 3); // the slope down past the final summit
+    last.colIndex = line.length - 1;
+
+    // Snow caps: the top of each peak, closed off by a jagged lower edge.
+    const caps = summits.map((summit) => {
+      const snowLine = summit.y + (H - summit.y) * 0.13;
+      let left = summit.index, right = summit.index;
+      while (left > 0 && line[left - 1].y < snowLine) left--;
+      while (right < line.length - 1 && line[right + 1].y < snowLine) right++;
+      const edge = [];
+      for (let i = 1; i < 6; i++) {
+        edge.push({
+          x: line[right].x + ((line[left].x - line[right].x) * i) / 6,
+          y: snowLine + (i % 2 ? 1 : -1) * (H * 0.02) * (0.5 + random()),
+        });
+      }
+      return outlineToPath([...line.slice(left, right + 1), ...edge]);
+    }).join(" ");
+
+    // Shadow: the side of each peak facing away from the light, down to its col.
+    const shade = summits.map((summit) => {
+      const col = line[summit.colIndex];
+      const footX = summit.x + (col.x - summit.x) * 0.22;
+      const fall = [];
+      for (let i = 1; i < 6; i++) {
+        fall.push({
+          x: footX + ((summit.x - footX) * i) / 6 + (random() - 0.5) * 9,
+          y: H + ((summit.y - H) * i) / 6,
+        });
+      }
+      return outlineToPath([
+        ...line.slice(summit.index, summit.colIndex + 1),
+        { x: summit.x + (col.x - summit.x) * 0.62, y: H }, { x: footX, y: H }, ...fall,
+      ]);
+    }).join(" ");
+
+    // A paler, lower range in the distance, for depth.
+    const farRandom = seededRandom(1953);
+    const farTop = toY(lowest * 0.82); // always below the lowest real summit
+    let far = [{ x: 0, y: farTop + H * 0.1 }];
+    for (let i = 1; i <= 9; i++) {
+      const end = { x: (RIDGE_W * i) / 9, y: farTop + H * (i % 2 ? farRandom() * 0.05 : 0.09 + farRandom() * 0.06) };
+      far = far.concat(roughen(far[far.length - 1], end, farRandom, farTop, 3).slice(1));
+    }
+
+    return { line, summits, outline: toGround(line), far: toGround(far), caps, shade };
+  }
+
+  // The height of the ridge at any horizontal position, so the marker stays on it.
+  function ridgeYAt(line, x) {
+    let low = 0, high = line.length - 1;
+    while (high - low > 1) { // binary search: halve the range until two points remain
+      const mid = (low + high) >> 1;
+      if (line[mid].x <= x) low = mid; else high = mid;
+    }
+    const a = line[low], b = line[high];
+    return a.y + ((b.y - a.y) * (x - a.x)) / (b.x - a.x || 1);
+  }
+
+  let ridge;
+
   function buildClimb() {
-    const d = ridgePath();
-    $("ridge-base-path").setAttribute("d", d);
-    $("ridge-fill-path").setAttribute("d", d);
-    $("gate-ridge-path").setAttribute("d", d);
+    ridge = buildRidge();
+    $("ridge-far-path").setAttribute("d", ridge.far);
+    $("gate-far-path").setAttribute("d", ridge.far);
+    $("gate-ridge-path").setAttribute("d", ridge.outline);
+    ["base", "fill"].forEach((layer) => {
+      $(`ridge-${layer}-path`).setAttribute("d", ridge.outline);
+      $(`ridge-${layer}-caps`).setAttribute("d", ridge.caps);
+      $(`ridge-${layer}-shade`).setAttribute("d", ridge.shade);
+    });
     $("bar").setAttribute("aria-valuemax", GOAL);
 
-    const ticks = $("summit-ticks");
-    peaks.slice(0, -1).forEach((peak) => {
+    // Summit labels and flags are HTML on top of the drawing, because the drawing
+    // stretches with the screen and would stretch text along with it.
+    peaks.forEach((peak, i) => {
+      const left = `${(ridge.summits[i].x / RIDGE_GOAL_X) * 100}%`;
+      const top = `${(ridge.summits[i].y / RIDGE_H) * 100}%`;
+
       const tick = el("i");
-      tick.style.left = `${(peak.cumulative / GOAL) * 100}%`;
-      ticks.append(tick);
+      tick.style.left = left;
+      tick.style.top = top;
+      $("summit-ticks").append(tick);
+
+      const summit = el("div", "summit");
+      summit.dataset.summit = i;
+      summit.style.left = left;
+      summit.style.top = top;
+      summit.title = `${peak.name}, the highest peak in ${peak.continent}, is ${fmt(peak.height)} m high. The group reaches it at ${fmt(peak.cumulative)} m.`;
+      summit.append(el("span", "summit-name", peak.name), el("span", "summit-flag"));
+      $("summits").append(summit);
     });
+    setClimbPosition(0);
 
     // Using each height as a column width keeps the labels on the same scale.
     $("peak-labels").style.gridTemplateColumns = peaks.map((p) => `${p.height}fr`).join(" ");
     peaks.forEach((peak, i) => {
       const label = el("li");
       label.dataset.peak = i;
-      label.title = `${peak.name} is ${fmt(peak.height)} m high. The group reaches it at ${fmt(peak.cumulative)} m.`;
-      label.append(el("span", "peak-name", peak.name), el("span", "peak-meta", `${fmt(peak.cumulative)} m`));
+      label.title = `${peak.name}, the highest peak in ${peak.continent}, is ${fmt(peak.height)} m high. The group reaches it at ${fmt(peak.cumulative)} m.`;
+      label.append(el("span", "peak-continent", peak.continent), el("span", "peak-meta", `${fmt(peak.cumulative)} m`));
       $("peak-labels").append(label);
 
       const row = el("li");
       row.dataset.peak = i;
-      row.append(el("span", "route-name", peak.name), el("span", "route-meta", `${fmt(peak.cumulative)} m`));
+      const place = el("span");
+      place.append(el("span", "route-name", peak.name), el("span", "route-continent", peak.continent));
+      row.append(place, el("span", "route-meta", `${fmt(peak.cumulative)} m`));
       $("route-list").append(row);
     });
   }
@@ -147,6 +274,59 @@
     return total;
   };
 
+  // Puts everything that shows the group's position at one point on the route.
+  function setClimbPosition(share) {
+    const x = share * RIDGE_GOAL_X;
+    const y = ridgeYAt(ridge.line, x);
+    const yPercent = (y / RIDGE_H) * 100;
+
+    $("bar-fill").style.width = `${share * 100}%`;
+    // The fill fades out just before this point. See the mask in styles.css.
+    $("ridge-fill").style.setProperty("--edge", share >= 1 ? "110%" : `${(x / RIDGE_W) * 100}%`);
+
+    const climber = $("climber");
+    climber.hidden = share >= 1; // at the finish, the flag on the last summit says it all
+    climber.style.left = `${share * 100}%`;
+    climber.style.top = `${yPercent}%`;
+    climber.classList.toggle("label-above", yPercent > 58); // near the valley floor, there's no room below
+    climber.classList.toggle("label-start", share < 0.06);  // keep it on screen at the very start
+
+    const nextIndex = peaks.findIndex((p) => share < p.cumulative / GOAL);
+    document.querySelectorAll("[data-summit]").forEach((node) => {
+      const i = Number(node.dataset.summit);
+      node.classList.toggle("reached", nextIndex === -1 || i < nextIndex);
+      node.classList.toggle("current", i === nextIndex);
+    });
+  }
+
+  // Walks the marker along the ridge. requestAnimationFrame runs a function just
+  // before the browser's next redraw, so each step lines up with what's on screen.
+  // CSS could only slide the marker in a straight line, cutting through the peaks.
+  const climbMotion = { shown: 0, frame: null, first: true };
+
+  function moveClimbTo(share) {
+    cancelAnimationFrame(climbMotion.frame);
+    const from = climbMotion.shown;
+    const duration = climbMotion.first ? 1800 : 800;
+    climbMotion.first = false;
+    if (from === share) return;
+
+    const skip = document.hidden || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (skip) {
+      climbMotion.shown = share;
+      setClimbPosition(share);
+      return;
+    }
+    const startTime = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - startTime) / duration);
+      climbMotion.shown = from + (share - from) * (1 - (1 - t) ** 3); // starts fast, eases in
+      setClimbPosition(climbMotion.shown);
+      if (t < 1) climbMotion.frame = requestAnimationFrame(step);
+    };
+    climbMotion.frame = requestAnimationFrame(step);
+  }
+
   function renderHero() {
     const total = totalMeters();
     const share = Math.min(total / GOAL, 1);
@@ -157,8 +337,7 @@
     $("goal-caption").textContent = total >= GOAL
       ? `Goal of ${fmt(GOAL)} m reached`
       : `of ${fmt(GOAL)} m, ${percent >= 10 ? Math.floor(percent) : percent.toFixed(1)}% of the way`;
-    $("ridge-fill").style.clipPath = `inset(0 ${100 - percent}% 0 0)`;
-    $("bar-fill").style.width = `${percent}%`;
+    moveClimbTo(share);
     $("bar").setAttribute("aria-valuenow", Math.min(total, GOAL));
     $("bar").setAttribute("aria-valuetext", `${fmt(total)} of ${fmt(GOAL)} meters`);
 
@@ -350,7 +529,7 @@
   // ---------- The trip map ----------
   // Leaflet draws the map; OpenStreetMap supplies the background images ("tiles").
   // The map and its tracks only load once the map section is near the screen.
-  const tripMap = { map: null, layers: new Map(), tracks: new Map(), fitted: false, ready: false };
+  const tripMap = { map: null, layers: new Map(), pins: new Map(), tracks: new Map(), fitted: false, ready: false };
 
   function tileLayer() {
     return L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -383,7 +562,7 @@
     renderMapData();
   }
 
-  function popupFor(entry) {
+  function popupForTrack(entry) {
     const box = el("div");
     const person = state.participants.get(entry.participant_id);
     box.append(
@@ -393,34 +572,79 @@
     return box;
   }
 
+  // Everyone who logged a climb at this exact spot, with the top climbers.
+  function popupForPlace(entries) {
+    const box = el("div");
+    const named = entries.find((e) => e.place_name);
+    const total = entries.reduce((sum, e) => sum + e.meters, 0);
+    box.append(
+      el("span", "popup-title", named ? named.place_name : "Trip"),
+      el("span", "popup-line", `${entries.length} ${entries.length === 1 ? "climb" : "climbs"}, ${fmt(total)} m`)
+    );
+    const byPerson = new Map();
+    entries.forEach((e) => byPerson.set(e.participant_id, (byPerson.get(e.participant_id) || 0) + e.meters));
+    [...byPerson.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).forEach(([id, meters]) => {
+      const person = state.participants.get(id);
+      box.append(el("span", "popup-line", `${person ? person.name : "Someone"}: ${fmt(meters)} m`));
+    });
+    return box;
+  }
+
+  const placeKey = (entry) => `${entry.lat},${entry.lng}`;
+
+  function placeIcon(count) {
+    // Numbers only, so nothing a person typed can end up in this HTML.
+    return count > 1
+      ? L.divIcon({ className: "map-pin has-count", html: String(count), iconSize: [26, 26], iconAnchor: [13, 13] })
+      : pinIcon();
+  }
+
   function renderMapData() {
     if (!tripMap.ready) return;
-    const seen = new Set();
     const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+    const seenTracks = new Set();
+    const places = new Map(); // location -> the climbs logged there
 
     state.entries.forEach((entry) => {
       const points = tripMap.tracks.get(entry.id);
-      const hasPin = entry.lat != null;
-      if (!points && !hasPin) return;
-      seen.add(entry.id);
-      if (tripMap.layers.has(entry.id)) return;
-
-      const layer = points
-        ? L.polyline(points, { color: accent, weight: 4, opacity: 0.85 })
-        : L.marker([entry.lat, entry.lng], { icon: pinIcon(), title: entry.place_name || "" });
-      layer.bindPopup(popupFor(entry)).addTo(tripMap.map);
-      tripMap.layers.set(entry.id, layer);
+      if (points) {
+        seenTracks.add(entry.id);
+        if (!tripMap.layers.has(entry.id)) {
+          const line = L.polyline(points, { color: accent, weight: 4, opacity: 0.85 });
+          line.bindPopup(popupForTrack(entry)).addTo(tripMap.map);
+          tripMap.layers.set(entry.id, line);
+        }
+      } else if (entry.lat != null) {
+        const key = placeKey(entry);
+        if (!places.has(key)) places.set(key, []);
+        places.get(key).push(entry);
+      }
     });
 
-    // Remove anything whose climb was deleted.
+    // Popular stairs get many climbs, so each location gets one pin with a count.
+    // Separate pins would stack up, and only the top one could be clicked.
+    places.forEach((entries, key) => {
+      let marker = tripMap.pins.get(key);
+      if (!marker) {
+        marker = L.marker([entries[0].lat, entries[0].lng]).bindPopup("").addTo(tripMap.map);
+        tripMap.pins.set(key, marker);
+      }
+      marker.setIcon(placeIcon(entries.length));
+      marker.setPopupContent(popupForPlace(entries));
+    });
+
+    // Remove anything whose climbs were all deleted.
     tripMap.layers.forEach((layer, id) => {
-      if (!seen.has(id)) { layer.remove(); tripMap.layers.delete(id); }
+      if (!seenTracks.has(id)) { layer.remove(); tripMap.layers.delete(id); }
+    });
+    tripMap.pins.forEach((marker, key) => {
+      if (!places.has(key)) { marker.remove(); tripMap.pins.delete(key); }
     });
 
     // Frame all the trips once, then leave the view to whoever is using the map.
-    if (!tripMap.fitted && tripMap.layers.size) {
-      const group = L.featureGroup([...tripMap.layers.values()]);
-      tripMap.map.fitBounds(group.getBounds().pad(0.15), { maxZoom: 12 });
+    const all = [...tripMap.layers.values(), ...tripMap.pins.values()];
+    if (!tripMap.fitted && all.length) {
+      tripMap.map.fitBounds(L.featureGroup(all).getBounds().pad(0.15), { maxZoom: 16 });
       tripMap.fitted = true;
     }
   }
@@ -428,10 +652,11 @@
   async function focusOnMap(id) {
     await initTripMap();
     $("map-section").scrollIntoView({ behavior: "smooth", block: "center" });
-    const layer = tripMap.layers.get(id);
+    const entry = state.entries.get(id);
+    const layer = tripMap.layers.get(id) || (entry && tripMap.pins.get(placeKey(entry)));
     if (!layer) return;
-    if (layer.getBounds) tripMap.map.fitBounds(layer.getBounds().pad(0.2), { maxZoom: 14 });
-    else tripMap.map.setView(layer.getLatLng(), 11);
+    if (layer.getBounds) tripMap.map.fitBounds(layer.getBounds().pad(0.2), { maxZoom: 15 });
+    else tripMap.map.setView(layer.getLatLng(), 16); // close enough to separate neighbouring stairs
     layer.openPopup();
   }
 
@@ -499,6 +724,23 @@
     return allowed.length > 0;
   }
 
+  function fillPlaceChoices() {
+    const select = $("place-choice");
+    const places = config.places || [];
+    const blank = el("option", null, "Choose a place");
+    blank.value = "";
+    select.replaceChildren(blank);
+    places.forEach((place, i) => {
+      const option = el("option", null, place.name);
+      option.value = String(i);
+      select.append(option);
+    });
+    const other = el("option", null, "Another place (tap the map)");
+    other.value = "other";
+    select.append(other);
+    select.value = places.length ? "" : "other";
+  }
+
   function showError(message) {
     const node = $("form-error");
     node.textContent = message || "";
@@ -512,6 +754,7 @@
     $("place").value = "";
     $("new-name").value = "";
     $("gpx-file").value = "";
+    fillPlaceChoices();
     form.track = null;
     form.gain = null;
     form.pin = null;
@@ -546,10 +789,13 @@
 
   function updateMapMode() {
     const mode = mapMode();
+    const ownPlace = mode === "pin" && $("place-choice").value === "other";
     $("gpx-field").hidden = mode !== "gpx";
-    $("pin-field").hidden = mode !== "pin";
-    $("place-field").hidden = mode === "none";
-    if (mode === "pin") initPinMap();
+    $("place-choice-field").hidden = mode !== "pin";
+    $("pin-field").hidden = !ownPlace;
+    // A ready-made location already has a name, so only ask for one otherwise.
+    $("place-field").hidden = !(mode === "gpx" || ownPlace);
+    if (ownPlace) initPinMap();
   }
 
   function initPinMap() {
@@ -613,7 +859,10 @@
     if (!Number.isInteger(meters) || meters < 1) return showError("Enter the meters you climbed as a whole number.");
     if (!day) return showError("Choose the day you climbed.");
     if (mode === "gpx" && !form.track) return showError("Choose a GPX file, or set the map option to Skip.");
-    if (mode === "pin" && !form.pin) return showError("Tap the map to place your pin, or set the map option to Skip.");
+    const choice = $("place-choice").value;
+    const preset = mode === "pin" && choice !== "" && choice !== "other" ? config.places[Number(choice)] : null;
+    if (mode === "pin" && choice === "") return showError("Choose a place from the list, or set the map option to Skip.");
+    if (mode === "pin" && choice === "other" && !form.pin) return showError("Tap the map to place your pin, or set the map option to Skip.");
 
     form.busy = true;
     $("save-button").disabled = true;
@@ -630,9 +879,9 @@
         meters,
         climbed_on: day.value,
         note: $("note").value.trim() || null,
-        place_name: mode === "none" ? null : $("place").value.trim() || null,
-        lat: mode === "pin" ? form.pin.lat : null,
-        lng: mode === "pin" ? form.pin.lng : null,
+        place_name: preset ? preset.name : mode === "none" ? null : $("place").value.trim() || null,
+        lat: preset ? preset.lat : mode === "pin" ? form.pin.lat : null,
+        lng: preset ? preset.lng : mode === "pin" ? form.pin.lng : null,
         track: mode === "gpx" ? form.track : null,
       });
 
@@ -713,6 +962,7 @@
     $("log-close").addEventListener("click", () => $("log-dialog").close());
     $("log-form").addEventListener("submit", submitForm);
     $("who").addEventListener("change", updateNewNameField);
+    $("place-choice").addEventListener("change", updateMapMode);
     document.querySelectorAll('input[name="map-mode"]').forEach((input) =>
       input.addEventListener("change", updateMapMode));
     $("gpx-file").addEventListener("change", (event) => readGpxFile(event.target.files[0]));
@@ -815,13 +1065,12 @@
       return;
     }
 
-    // Draw the bar empty first, so the climb animates up to the real total once.
+    // The marker starts at the bottom and climbs to the real total once.
     state.previousTotal = totalMeters(); // no summit message for the initial load
     renderBoard();
     renderFeed();
     renderStatus(totalMeters());
-    document.documentElement.classList.add("has-motion");
-    requestAnimationFrame(() => requestAnimationFrame(renderHero));
+    renderHero();
 
     store.subscribe(onLiveChange);
   }
