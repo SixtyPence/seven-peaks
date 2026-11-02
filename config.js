@@ -10,12 +10,12 @@ window.PEAKS_CONFIG = {
   eventName: "Seven Peaks Challenge",
 
   // Supabase > your project > Connect (or Settings > API Keys)
-  supabaseUrl: "",   // looks like https://abcdefgh.supabase.co
-  supabaseKey: "",   // the publishable key, starts with sb_publishable_ (older projects: the anon key)
+  supabaseUrl: "https://zdhbiynvtrsoiljwlmpn.supabase.co",   // looks like https://abcdefgh.supabase.co
+  supabaseKey: "sb_publishable_M3RloT4ZoeoD5F1Rkpo08w_hEaqZiAs",   // the publishable key, starts with sb_publishable_ (older projects: the anon key)
 
   // The shared account's email. People only type the password, so the page
   // supplies this for them. It must match supabase/settings.sql.
-  sharedEmail: "",
+  sharedEmail: "thoreau8@protonmail.ch",
 
   // Used to work out each person's fair share of the climb.
   expectedParticipants: 36,
