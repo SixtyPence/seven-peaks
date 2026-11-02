@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Seven Peaks Challenge</title>
+<meta name="description" content="Together we climb the height of the world's seven highest mountains in five days.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23142440'/%3E%3Cpath d='M3 27 13 8l5 9 3-5 8 15z' fill='%23ff7a93'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="demo-note" id="demo-note" hidden>
+  <div class="wrap">Demo mode: the people, climbs and dates are samples, and anything you log disappears when you reload.</div>
+</div>
+
+<!-- The password screen. Until someone signs in, the page holds no challenge data. -->
+<section class="gate" id="gate" hidden>
+  <div class="wrap gate-inner">
+    <h1 id="gate-name">Seven Peaks Challenge</h1>
+    <form class="gate-form" id="gate-form" novalidate>
+      <!-- Lets password managers save this password under the shared account. -->
+      <input id="gate-username" type="text" name="username" autocomplete="username" tabindex="-1" aria-hidden="true" hidden>
+      <label for="gate-password">Group password</label>
+      <div class="gate-row">
+        <input id="gate-password" type="password" name="password" autocomplete="current-password">
+        <button class="button button-primary" id="gate-button" type="submit">Enter</button>
+      </div>
+      <p class="gate-hint" id="gate-hint">Ask the organizer for it. This device stays signed in until you sign out.</p>
+      <p class="gate-error" id="gate-error" role="alert" hidden></p>
+    </form>
+  </div>
+  <svg class="gate-ridge" viewBox="0 0 1000 200" preserveAspectRatio="none" aria-hidden="true"><path id="gate-ridge-path"></path></svg>
+</section>
+
+<div id="app" hidden>
+<!-- The hero: the whole challenge in one picture. -->
+<header class="hero">
+  <div class="wrap hero-inner">
+    <div class="hero-top">
+      <div>
+        <h1 id="event-name">Seven Peaks Challenge</h1>
+        <p class="hero-dates" id="event-status">Loading the climb</p>
+      </div>
+      <button class="button button-primary" id="log-button" type="button">Log meters</button>
+    </div>
+
+    <div class="readout">
+      <div class="readout-main">
+        <p class="big-number"><span id="total-climbed">0</span> m</p>
+        <p class="readout-caption" id="goal-caption">climbed so far</p>
+      </div>
+      <dl class="readout-side">
+        <div><dt id="next-label">Next summit</dt><dd id="next-summit">Dhaulagiri</dd><dd class="readout-detail" id="next-detail"></dd></div>
+        <div id="pace-block" hidden><dt>Pace</dt><dd id="pace-main"></dd><dd class="readout-detail" id="pace-detail"></dd></div>
+      </dl>
+    </div>
+
+    <div class="climb" id="climb">
+      <div class="ridge" aria-hidden="true">
+        <svg id="ridge-base" viewBox="0 0 1000 200" preserveAspectRatio="none"><path id="ridge-base-path"></path></svg>
+        <svg id="ridge-fill" viewBox="0 0 1000 200" preserveAspectRatio="none">
+          <defs><linearGradient id="alpenglow" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="var(--glow-high)"></stop>
+            <stop offset="1" stop-color="var(--glow-low)"></stop>
+          </linearGradient></defs>
+          <path id="ridge-fill-path" fill="url(#alpenglow)"></path>
+        </svg>
+        <div class="summit-ticks" id="summit-ticks"></div>
+      </div>
+      <div class="bar" id="bar" role="progressbar" aria-valuemin="0" aria-label="Meters climbed by the group">
+        <div class="bar-fill" id="bar-fill"></div>
+        <div class="bar-pace" id="bar-pace" title="Where the group needs to be by tonight" hidden></div>
+      </div>
+      <ol class="peak-labels" id="peak-labels"></ol>
+    </div>
+
+    <ol class="route-list" id="route-list"></ol>
+  </div>
+</header>
+
+<main class="wrap main">
+  <div class="columns">
+    <section aria-labelledby="board-title">
+      <h2 id="board-title">Leaderboard</h2>
+      <p class="section-note" id="board-note"></p>
+      <ol class="board" id="board"></ol>
+      <button class="button button-quiet" id="board-more" type="button" hidden></button>
+    </section>
+
+    <section aria-labelledby="feed-title">
+      <h2 id="feed-title">Latest climbs</h2>
+      <ul class="feed" id="feed"></ul>
+      <p class="empty" id="feed-empty" hidden>Nobody has logged a climb yet. The first meters are yours: press Log meters.</p>
+      <button class="button button-quiet" id="feed-more" type="button" hidden>Show more climbs</button>
+    </section>
+  </div>
+
+  <section class="map-section" id="map-section" aria-labelledby="map-title">
+    <h2 id="map-title">Trips on the map</h2>
+    <p class="section-note" id="map-note">Add a GPX file or a place when you log a longer trip, and it shows up here.</p>
+    <div class="map" id="map"></div>
+  </section>
+</main>
+
+<footer class="wrap footer">
+  <p>Names and trips here are visible to everyone with the group password. Map data from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors.</p>
+  <button class="link-button" id="sign-out" type="button">Sign out of this device</button>
+</footer>
+</div>
+
+<!-- The form for logging a climb. -->
+<dialog class="dialog" id="log-dialog" aria-labelledby="log-title">
+  <form id="log-form" novalidate>
+    <div class="dialog-head">
+      <h2 id="log-title">Log meters</h2>
+      <button class="close" id="log-close" type="button" aria-label="Close">×</button>
+    </div>
+
+    <div class="field">
+      <label for="who">Who climbed?</label>
+      <select id="who"></select>
+    </div>
+    <div class="field" id="new-name-field" hidden>
+      <label for="new-name">Your name</label>
+      <input id="new-name" type="text" maxlength="40" autocomplete="given-name">
+      <p class="hint">Everyone in the challenge can see this. A first name or nickname is enough.</p>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label for="meters">Meters climbed</label>
+        <input id="meters" type="number" inputmode="numeric" min="1" step="1" placeholder="850">
+      </div>
+      <fieldset class="field">
+        <legend>Day</legend>
+        <div class="days" id="days"></div>
+      </fieldset>
+    </div>
+
+    <div class="field">
+      <label for="note">Note <span class="optional">(optional)</span></label>
+      <input id="note" type="text" maxlength="140" placeholder="Stairs at work, all of them">
+    </div>
+
+    <fieldset class="field">
+      <legend>Add to the map <span class="optional">(optional, for longer trips)</span></legend>
+      <div class="choice" id="map-choice">
+        <label><input type="radio" name="map-mode" value="none" checked><span>Skip</span></label>
+        <label><input type="radio" name="map-mode" value="gpx"><span>GPX file</span></label>
+        <label><input type="radio" name="map-mode" value="pin"><span>Pick a place</span></label>
+      </div>
+    </fieldset>
+
+    <div class="field" id="gpx-field" hidden>
+      <label for="gpx-file">GPX file</label>
+      <input id="gpx-file" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml">
+      <p class="hint" id="gpx-status">Everyone in the challenge can see your full route, including where it starts and ends. Only a simplified line is saved. Times and heart rate stay on your device.</p>
+      <button class="button button-quiet" id="gpx-use" type="button" hidden></button>
+    </div>
+
+    <div class="field" id="pin-field" hidden>
+      <p class="hint" id="pin-status">Tap the map to place your pin.</p>
+      <div class="pin-map" id="pin-map"></div>
+    </div>
+
+    <div class="field" id="place-field" hidden>
+      <label for="place">Name of the place or trip</label>
+      <input id="place" type="text" maxlength="80" placeholder="Zugspitze">
+    </div>
+
+    <p class="form-error" id="form-error" role="alert" hidden></p>
+    <button class="button button-primary button-wide" id="save-button" type="submit">Save climb</button>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="config.js"></script>
+<script src="gpx.js"></script>
+<script src="store.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
