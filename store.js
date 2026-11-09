@@ -84,13 +84,15 @@ window.PeaksStore = (function () {
       },
 
       async load() {
+        // Every challenge's times and every climb. The page picks out the
+        // challenge on screen, so switching needs no new download.
         const [isMember, events, participants, entries] = await Promise.all([
           client.rpc("is_member").then(unwrap),
-          client.from("event").select("*").eq("id", 1).then(unwrap),
+          client.from("event").select("*").order("id").then(unwrap),
           loadAll("participants", "id"),
           loadAll("entries", "id"),
         ]);
-        return { isMember, event: events[0] || null, participants, entries };
+        return { isMember, events, participants, entries };
       },
 
       async join(name) {
@@ -99,6 +101,7 @@ window.PeaksStore = (function () {
 
       async addEntry(e) {
         return unwrap(await client.rpc("add_entry", {
+          p_event_id: e.event_id,
           p_participant_id: e.participant_id,
           p_meters: e.meters,
           p_climbed_on: e.climbed_on,
@@ -137,11 +140,19 @@ window.PeaksStore = (function () {
 
   function createDemoStore(config) {
     const iso = (date) => date.toISOString().slice(0, 10);
-    const now = new Date();
-    const utcToday = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-    const day = (offset) => iso(new Date(utcToday.getTime() + offset * 86400000));
+    // Days on the demo's clock (Helsinki), so they match the challenge days.
+    const zoneDay = (moment) => {
+      const parts = {};
+      new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Helsinki", year: "numeric", month: "2-digit", day: "2-digit" })
+        .formatToParts(moment).forEach((part) => { parts[part.type] = part.value; });
+      return `${parts.year}-${parts.month}-${parts.day}`;
+    };
+    const zoneToday = new Date(`${zoneDay(new Date())}T00:00:00Z`);
+    const day = (offset) => iso(new Date(zoneToday.getTime() + offset * 86400000));
 
-    // Sample data: invented people and trips, always in the middle of the challenge.
+    // Sample data: invented people and trips. The first challenge in
+    // challenges.js is in its third day, about 40% of the way. Each older one
+    // finished a week earlier than the one before it, with the goal reached.
     const names = ["Mara", "Jonas", "Ida", "Felix", "Noor", "Tomás", "Lena", "Oskar", "Priya", "Emil", "Sofia", "Ben",
       "Hanna", "Yusuf", "Clara", "Mats", "Elif", "Paul", "Greta", "Luca", "Nina", "Anton", "Maya", "Theo",
       "Rosa", "Henrik", "Amira", "Karl", "Julia", "Sam", "Alma", "Nils", "Vera", "Omar", "Tessa", "Finn"];
@@ -153,51 +164,79 @@ window.PeaksStore = (function () {
     let seed = 42;
     const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 
+    // 08:00 to 16:00 Helsinki is 06:00 to 14:00 UTC in winter.
+    const events = config.challenges.map((challenge, i) => {
+      const startDay = i === 0 ? -2 : -7 * i - 4;
+      return {
+        id: challenge.id, starts_at: `${day(startDay)}T06:00:00Z`, ends_at: `${day(startDay + 4)}T14:00:00Z`,
+        time_zone: "Europe/Helsinki", late_minutes: 60, max_meters_per_entry: 5000,
+      };
+    });
+
     let nextId = 1;
     const entries = [];
     const tracks = [];
-    participants.forEach((person) => {
-      const count = 1 + Math.floor(random() * 1.8);
-      for (let i = 0; i < count; i++) {
-        entries.push({
-          id: nextId++, participant_id: person.id,
-          meters: 120 + Math.round(random() * 60) * 10,
-          climbed_on: day(-Math.floor(random() * 3)),
-          note: random() < 0.4 ? notes[Math.floor(random() * notes.length)] : null,
-          place_name: null, lat: null, lng: null, has_track: false,
-          created_at: new Date().toISOString(),
-        });
-      }
-    });
 
-    function addTrip(personIndex, meters, offset, place, lat, lng, wiggle) {
-      const entry = {
-        id: nextId++, participant_id: personIndex + 1, meters, climbed_on: day(offset),
-        note: null, place_name: place, lat: wiggle ? null : lat, lng: wiggle ? null : lng,
-        has_track: !!wiggle, created_at: new Date().toISOString(),
-      };
-      entries.push(entry);
-      if (wiggle) {
-        const points = [];
-        for (let i = 0; i <= 60; i++) {
-          const t = i / 60;
-          points.push([
-            +(lat + t * wiggle + Math.sin(t * 13) * wiggle * 0.12).toFixed(5),
-            +(lng + Math.sin(t * Math.PI) * wiggle * 0.8 + Math.cos(t * 9) * wiggle * 0.1).toFixed(5),
-          ]);
-        }
-        tracks.push({ entry_id: entry.id, points });
+    function trackNear(lat, lng, size) {
+      const points = [];
+      for (let i = 0; i <= 60; i++) {
+        const t = i / 60;
+        points.push([
+          +(lat + t * size + Math.sin(t * 13) * size * 0.12).toFixed(5),
+          +(lng + Math.sin(t * Math.PI) * size * 0.8 + Math.cos(t * 9) * size * 0.1).toFixed(5),
+        ]);
       }
+      return points;
     }
-    addTrip(0, 1150, -2, "Forest loop", 63.700, 23.000, 0.02);
-    addTrip(3, 980, -1, "Ridge walk", 63.735, 23.070, 0.018);
-    addTrip(20, 640, -2, "Cabin hill", 63.710, 23.020, null);
-    // Several climbs at each ready-made location, as there will be in real use.
-    (config.places || []).forEach((place, p) => {
-      for (let n = 0; n < 5 - p; n++) {
-        addTrip((p * 7 + n * 5) % 36, 180 + Math.round(random() * 12) * 10, -Math.floor(random() * 3),
-          place.name, place.lat, place.lng, null);
+
+    // Oldest challenge first, so climb numbers rise with time as they do for real.
+    [...config.challenges].reverse().forEach((challenge) => {
+      const index = config.challenges.indexOf(challenge);
+      const event = events[index];
+      const goal = challenge.peaks.reduce((sum, peak) => sum + peak.height, 0);
+      const target = index === 0 ? goal * 0.4 : goal + 2400;
+      const own = [];
+      for (let total = 0; total < target; ) {
+        const meters = 120 + Math.round(random() * 60) * 10;
+        const entry = {
+          id: nextId++, event_id: challenge.id,
+          participant_id: 1 + Math.floor(random() * participants.length), meters,
+          note: random() < 0.3 ? notes[Math.floor(random() * notes.length)] : null,
+          place_name: null, lat: null, lng: null, has_track: false,
+        };
+        // Some climbs at the ready-made locations, as there will be in real use.
+        const place = random() < 0.25 && config.places && config.places[Math.floor(random() * config.places.length)];
+        if (place) Object.assign(entry, { place_name: place.name, lat: place.lat, lng: place.lng });
+        own.push(entry);
+        total += meters;
       }
+      // Two longer trips with GPX tracks.
+      [["Forest loop", 63.700, 23.000, 0.02, 1150], ["Ridge walk", 63.735, 23.070, 0.018, 980]].forEach(([name, lat, lng, size, meters], t) => {
+        const entry = own[Math.floor(own.length * (0.3 + t * 0.3))];
+        Object.assign(entry, { place_name: name, meters, has_track: true });
+        tracks.push({ entry_id: entry.id, points: trackNear(lat + index * 0.01, lng, size) });
+      });
+
+      // Spread the climbs over the challenge's daytime hours, 08:00 to 20:00
+      // Helsinki, in the order they were logged, so summit times look real.
+      const windows = [];
+      const start = Date.parse(event.starts_at), end = Math.min(Date.parse(event.ends_at), Date.now() - 60000);
+      for (let t = Date.parse(`${zoneDay(new Date(start))}T06:00:00Z`); t < end; t += 86400000) {
+        const from = Math.max(t, start), to = Math.min(t + 12 * 3600000, end);
+        if (to > from) windows.push([from, to]);
+      }
+      const daytime = windows.reduce((sum, [from, to]) => sum + to - from, 0);
+      own.forEach((entry, i) => {
+        let left = (daytime * (i + 1)) / (own.length + 1);
+        let moment = new Date(end);
+        for (const [from, to] of windows) {
+          if (left <= to - from) { moment = new Date(from + left); break; }
+          left -= to - from;
+        }
+        entry.created_at = moment.toISOString();
+        entry.climbed_on = zoneDay(moment);
+      });
+      entries.push(...own);
     });
 
     const ownTokens = new Set();
@@ -214,7 +253,7 @@ window.PeaksStore = (function () {
       async load() {
         return {
           isMember: true,
-          event: { id: 1, start_date: day(-2), end_date: day(2), max_meters_per_entry: 5000 },
+          events: events.map((e) => ({ ...e })),
           participants: participants.map((p) => ({ ...p })),
           entries: entries.map((e) => ({ ...e })),
         };
@@ -229,10 +268,15 @@ window.PeaksStore = (function () {
         return { ...person };
       },
       async addEntry(e) {
+        const event = events.find((ev) => ev.id === e.event_id);
+        if (!event) throw new Error("The organizer has not set the times for this challenge yet.");
+        if (Date.now() > Date.parse(event.ends_at) + event.late_minutes * 60000) {
+          throw new Error("The challenge is over, so no more climbs can be logged.");
+        }
         if (!(e.meters >= 1 && e.meters <= 5000)) throw new Error("Enter between 1 and 5000 meters for one entry.");
-        if (e.climbed_on > day(0)) throw new Error("That date is still in the future.");
+        if (e.climbed_on > day(0)) throw new Error("That day is still in the future.");
         const entry = {
-          id: nextId++, participant_id: e.participant_id, meters: e.meters, climbed_on: e.climbed_on,
+          id: nextId++, event_id: e.event_id, participant_id: e.participant_id, meters: e.meters, climbed_on: e.climbed_on,
           note: e.note || null, place_name: e.place_name || null, lat: e.lat, lng: e.lng,
           has_track: !!e.track, created_at: new Date().toISOString(),
         };

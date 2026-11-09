@@ -4,14 +4,19 @@
 // screen can't drift away from the data.
 
 (function () {
-  const config = window.PEAKS_CONFIG;
+  // config.js holds the connection details and challenges.js the content. The
+  // content comes second, so it wins over any old peaks or places in config.js.
+  const config = { ...window.PEAKS_CONFIG, ...window.PEAKS_CONTENT };
   const store = window.PeaksStore.create(config);
   const $ = (id) => document.getElementById(id);
 
   const state = {
-    event: null,
-    participants: new Map(), // id -> person
-    entries: new Map(),      // id -> climb. A Map means a repeated update can't double-count.
+    challenge: null,         // the challenge on screen, from challenges.js
+    events: new Map(),       // challenge id -> its times from the database
+    event: null,             // the times of the challenge on screen
+    participants: new Map(), // id -> person. Shared by all challenges.
+    allEntries: new Map(),   // id -> climb, in every challenge. A Map means a repeated update can't double-count.
+    entries: new Map(),      // only the climbs of the challenge on screen
     boardExpanded: false,
     feedLimit: 12,
     lastLoaded: 0,
@@ -21,38 +26,80 @@
     endingSession: false,
   };
 
-  // Work out where each summit sits on the way to the goal.
-  let running = 0;
-  const peaks = config.peaks.map((peak) => {
-    running += peak.height;
-    return { ...peak, cumulative: running };
-  });
-  const GOAL = running;
+  // The peaks of the challenge on screen, and where each summit sits on the way
+  // to the goal. Set by showChallenge().
+  let peaks = [];
+  let GOAL = 0;
 
 
   // ---------- Small helpers ----------
   const number = new Intl.NumberFormat("en-GB");
   const fmt = (n) => number.format(Math.round(n));
-  const pad = (n) => String(n).padStart(2, "0");
-  const localToday = () => {
-    const d = new Date();
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  };
-  // Dates are stored as plain YYYY-MM-DD. Reading them as UTC and formatting them
-  // as UTC means a time zone can never push a date onto the wrong day.
+
+  // Two kinds of time appear on this page:
+  // - Climb days, stored as plain dates (YYYY-MM-DD). Reading and formatting them
+  //   as UTC means a time zone can never push one onto the wrong day.
+  // - Moments, like the start and end. These are shown on the challenge's own
+  //   clock (time_zone in settings.sql), so a phone set to another time zone
+  //   still shows the organizer's times and agrees with the database about "today".
   const asDate = (iso) => new Date(iso + "T00:00:00Z");
   const formatDate = (iso, options) =>
     new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", ...options }).format(asDate(iso));
   const shortDay = (iso) => formatDate(iso, { weekday: "short", day: "numeric", month: "short" });
   const dayOnly = (iso) => formatDate(iso, { weekday: "short" });
 
+  const eventZone = () => (state.event && state.event.time_zone) || undefined;
+  const formatMoment = (moment, options) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: eventZone(), ...options }).format(new Date(moment));
+  const when = (moment) => formatMoment(moment, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  const clock = (moment) => formatMoment(moment, { hour: "2-digit", minute: "2-digit" });
+
+  // The calendar day of a moment on the challenge's clock, as YYYY-MM-DD.
+  function dayOf(moment) {
+    const parts = {};
+    new Intl.DateTimeFormat("en-GB", { timeZone: eventZone(), year: "numeric", month: "2-digit", day: "2-digit" })
+      .formatToParts(new Date(moment)).forEach((part) => { parts[part.type] = part.value; });
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  }
+  const eventToday = () => dayOf(Date.now());
+
+  // A challenge's key moments, in milliseconds since 1970 (easy to compare).
+  function eventTimes(event = state.event) {
+    const start = Date.parse(event.starts_at);
+    const end = Date.parse(event.ends_at);
+    return { start, end, close: end + event.late_minutes * 60000 };
+  }
+
+  // "before", "live", "late" (ended, but logging stays open), "over", or "unset".
+  function phase(event = state.event) {
+    if (!event) return "unset";
+    const { start, end, close } = eventTimes(event);
+    const now = Date.now();
+    if (now < start) return "before";
+    if (now < end) return "live";
+    if (now < close) return "late";
+    return "over";
+  }
+
   function eventDays() {
     if (!state.event) return [];
+    const { start, end } = eventTimes();
+    const first = dayOf(start);
+    const last = dayOf(end - 1000); // an end at exactly midnight belongs to the day before
     const days = [];
-    for (let t = asDate(state.event.start_date).getTime(); t <= asDate(state.event.end_date).getTime(); t += 86400000) {
+    for (let t = asDate(first).getTime(); t <= asDate(last).getTime(); t += 86400000) {
       days.push(new Date(t).toISOString().slice(0, 10));
     }
     return days;
+  }
+
+  // "2 days 4 h", "3 h 20 min", "12 min"
+  function timeLeft(ms) {
+    const minutes = Math.max(1, Math.round(ms / 60000));
+    const days = Math.floor(minutes / 1440), hours = Math.floor((minutes % 1440) / 60), mins = minutes % 60;
+    if (days) return `${days} ${days === 1 ? "day" : "days"}${hours ? ` ${hours} h` : ""}`;
+    if (hours) return `${hours} h${mins ? ` ${mins} min` : ""}`;
+    return `${mins} min`;
   }
 
   // Browser storage can be blocked (private windows, for example), so a failure
@@ -84,9 +131,9 @@
   // ---------- The ridge drawing ----------
   // The ridge is drawn to scale in both directions. Each summit sits exactly where
   // the group reaches it on the bar below, and its height is true relative to the
-  // others. Only the small crags on the way up are made up.
-  const RIDGE_W = 1060;     // drawing width. Past the goal, the ridge falls away.
-  const RIDGE_GOAL_X = 1000; // where the goal sits in the drawing, and so the end of the bar
+  // others. Only the small crags on the way up are made up. The drawing ends at
+  // the final summit, which is the goal, so the ridge and the bar end together.
+  const RIDGE_W = 1000;
   const RIDGE_H = 240;
 
   // A repeatable random generator: same seed, same mountains on every device.
@@ -120,7 +167,8 @@
 
   function buildRidge() {
     const H = RIDGE_H;
-    const random = seededRandom(20261109);
+    // Each challenge gets its own mountains. (Challenge 1 keeps its original ones.)
+    const random = seededRandom(20261109 + (state.challenge.id - 1) * 7919);
     const heights = peaks.map((p) => p.height);
     const tallest = Math.max(...heights);
     const lowest = Math.min(...heights) / tallest;
@@ -133,8 +181,8 @@
     let previous = 0;
 
     peaks.forEach((peak, i) => {
-      const x0 = (previous / GOAL) * RIDGE_GOAL_X;
-      const x1 = (peak.cumulative / GOAL) * RIDGE_GOAL_X;
+      const x0 = (previous / GOAL) * RIDGE_W;
+      const x1 = (peak.cumulative / GOAL) * RIDGE_W;
       const y = toY(peak.height / tallest);
       if (i > 0) {
         // A col is the low pass between two peaks, well below the lower of them.
@@ -153,9 +201,6 @@
       previous = peak.cumulative;
     });
 
-    const last = summits[summits.length - 1];
-    extend({ x: RIDGE_W, y: H * 0.68 }, last.y + 3); // the slope down past the final summit
-    last.colIndex = line.length - 1;
 
     // Snow caps: the top of each peak, closed off by a jagged lower edge.
     const caps = summits.map((summit) => {
@@ -174,7 +219,8 @@
     }).join(" ");
 
     // Shadow: the side of each peak facing away from the light, down to its col.
-    const shade = summits.map((summit) => {
+    // The final summit is the edge of the drawing, so it has no far side to shade.
+    const shade = summits.filter((summit) => summit.colIndex !== undefined).map((summit) => {
       const col = line[summit.colIndex];
       const footX = summit.x + (col.x - summit.x) * 0.22;
       const fall = [];
@@ -214,8 +260,11 @@
   }
 
   let ridge;
+  const peakTitle = (peak) =>
+    `${peak.name} (${peak.region}) is ${fmt(peak.height)} m high. The group reaches it at ${fmt(peak.cumulative)} m.`;
 
   function buildClimb() {
+    ["summit-ticks", "summits", "peak-labels", "route-list"].forEach((id) => $(id).replaceChildren());
     ridge = buildRidge();
     $("ridge-far-path").setAttribute("d", ridge.far);
     $("gate-far-path").setAttribute("d", ridge.far);
@@ -225,12 +274,15 @@
       $(`ridge-${layer}-caps`).setAttribute("d", ridge.caps);
       $(`ridge-${layer}-shade`).setAttribute("d", ridge.shade);
     });
+    const crest = outlineToPath(ridge.line, false); // the ridge's top edge, left to right
+    $("route-halo").setAttribute("d", crest);
+    $("route-line").setAttribute("d", crest);
     $("bar").setAttribute("aria-valuemax", GOAL);
 
     // Summit labels and flags are HTML on top of the drawing, because the drawing
     // stretches with the screen and would stretch text along with it.
     peaks.forEach((peak, i) => {
-      const left = `${(ridge.summits[i].x / RIDGE_GOAL_X) * 100}%`;
+      const left = `${(ridge.summits[i].x / RIDGE_W) * 100}%`;
       const top = `${(ridge.summits[i].y / RIDGE_H) * 100}%`;
 
       const tick = el("i");
@@ -238,12 +290,15 @@
       tick.style.top = top;
       $("summit-ticks").append(tick);
 
-      const summit = el("div", "summit");
+      const summit = el("div", i === peaks.length - 1 ? "summit is-last" : "summit");
       summit.dataset.summit = i;
       summit.style.left = left;
       summit.style.top = top;
-      summit.title = `${peak.name}, the highest peak in ${peak.continent}, is ${fmt(peak.height)} m high. The group reaches it at ${fmt(peak.cumulative)} m.`;
-      summit.append(el("span", "summit-name", peak.name), el("span", "summit-flag"));
+      summit.title = peakTitle(peak);
+      const name = el("span", peak.short ? "summit-name has-short" : "summit-name");
+      name.append(el("span", "name-full", peak.name));
+      if (peak.short) name.append(el("span", "name-short", peak.short));
+      summit.append(name, el("span", "summit-flag"));
       $("summits").append(summit);
     });
     setClimbPosition(0);
@@ -253,15 +308,21 @@
     peaks.forEach((peak, i) => {
       const label = el("li");
       label.dataset.peak = i;
-      label.title = `${peak.name}, the highest peak in ${peak.continent}, is ${fmt(peak.height)} m high. The group reaches it at ${fmt(peak.cumulative)} m.`;
-      label.append(el("span", "peak-continent", peak.continent), el("span", "peak-meta", `${fmt(peak.cumulative)} m`));
+      label.title = peakTitle(peak);
+      label.append(
+        el("span", "peak-region", peak.region),
+        el("span", "peak-meta", `${fmt(peak.cumulative)} m`),
+        el("span", "peak-reached") // filled in with the time the group got there
+      );
       $("peak-labels").append(label);
 
       const row = el("li");
       row.dataset.peak = i;
       const place = el("span");
-      place.append(el("span", "route-name", peak.name), el("span", "route-continent", peak.continent));
-      row.append(place, el("span", "route-meta", `${fmt(peak.cumulative)} m`));
+      place.append(el("span", "route-name", peak.name), el("span", "route-region", peak.region));
+      const right = el("span", "route-right");
+      right.append(el("span", "route-meta", `${fmt(peak.cumulative)} m`), el("span", "route-reached"));
+      row.append(place, right);
       $("route-list").append(row);
     });
   }
@@ -276,13 +337,15 @@
 
   // Puts everything that shows the group's position at one point on the route.
   function setClimbPosition(share) {
-    const x = share * RIDGE_GOAL_X;
+    const x = share * RIDGE_W;
     const y = ridgeYAt(ridge.line, x);
     const yPercent = (y / RIDGE_H) * 100;
 
     $("bar-fill").style.width = `${share * 100}%`;
     // The fill fades out just before this point. See the mask in styles.css.
-    $("ridge-fill").style.setProperty("--edge", share >= 1 ? "110%" : `${(x / RIDGE_W) * 100}%`);
+    $("ridge-fill").style.setProperty("--edge", share >= 1 ? "110%" : `${share * 100}%`);
+    // The finished look starts as the marker reaches the last summit. See .is-complete in styles.css.
+    $("hero").classList.toggle("is-complete", share >= 1);
 
     const climber = $("climber");
     climber.hidden = share >= 1; // at the finish, the flag on the last summit says it all
@@ -290,6 +353,7 @@
     climber.style.top = `${yPercent}%`;
     climber.classList.toggle("label-above", yPercent > 58); // near the valley floor, there's no room below
     climber.classList.toggle("label-start", share < 0.06);  // keep it on screen at the very start
+    climber.classList.toggle("label-end", share > 0.94);    // and at the very end
 
     const nextIndex = peaks.findIndex((p) => share < p.cumulative / GOAL);
     document.querySelectorAll("[data-summit]").forEach((node) => {
@@ -327,6 +391,19 @@
     climbMotion.frame = requestAnimationFrame(step);
   }
 
+  // The summit register: when the group's running total passed each summit.
+  // Climbs are added up in the order they were logged, and each summit gets the
+  // time of the climb that took the total past it.
+  function summitTimes() {
+    const times = [];
+    let running = 0, next = 0;
+    [...state.entries.values()].sort((a, b) => a.id - b.id).forEach((entry) => {
+      running += entry.meters;
+      while (next < peaks.length && running >= peaks[next].cumulative) times[next++] = entry.created_at;
+    });
+    return times;
+  }
+
   function renderHero() {
     const total = totalMeters();
     const share = Math.min(total / GOAL, 1);
@@ -335,7 +412,7 @@
     $("total-climbed").textContent = fmt(total);
     // Math.floor, so the page only ever says 100% once the goal is truly reached.
     $("goal-caption").textContent = total >= GOAL
-      ? `Goal of ${fmt(GOAL)} m reached`
+      ? `Goal of ${fmt(GOAL)} m reached${total > GOAL ? `, plus ${fmt(total - GOAL)} m` : ""}`
       : `of ${fmt(GOAL)} m, ${percent >= 10 ? Math.floor(percent) : percent.toFixed(1)}% of the way`;
     moveClimbTo(share);
     $("bar").setAttribute("aria-valuenow", Math.min(total, GOAL));
@@ -348,10 +425,17 @@
       node.classList.toggle("current", i === nextIndex);
     });
 
+    const reachedAt = summitTimes();
+    document.querySelectorAll(".peak-reached, .route-reached").forEach((node) => {
+      const time = reachedAt[Number(node.closest("[data-peak]").dataset.peak)];
+      node.textContent = time ? formatMoment(time, { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+    });
+
     if (nextIndex === -1) {
-      $("next-label").textContent = "Summits";
-      $("next-summit").textContent = "All seven climbed";
-      $("next-detail").textContent = total > GOAL ? `${fmt(total - GOAL)} m beyond the goal` : "Goal reached";
+      const final = reachedAt[peaks.length - 1];
+      $("next-label").textContent = "Final summit reached";
+      $("next-summit").textContent = final ? when(final) : peaks[peaks.length - 1].name;
+      $("next-detail").textContent = "";
     } else {
       $("next-label").textContent = "Next summit";
       $("next-summit").textContent = peaks[nextIndex].name;
@@ -363,40 +447,43 @@
     // Celebrate summits that were reached while the page was open.
     if (state.previousTotal !== null) {
       const crossed = peaks.filter((p) => state.previousTotal < p.cumulative && total >= p.cumulative).pop();
-      if (crossed) toast(`${crossed.name} summited! Peak ${peaks.indexOf(crossed) + 1} of ${peaks.length}.`, 6000);
+      if (crossed && total >= GOAL) toast(`Challenge complete! All ${peaks.length} summits climbed.`, 8000);
+      else if (crossed) toast(`${crossed.name} summited! Peak ${peaks.indexOf(crossed) + 1} of ${peaks.length}.`, 6000);
     }
     state.previousTotal = total;
   }
 
   function renderStatus(total) {
-    const event = state.event;
-    if (!event) {
-      $("event-status").textContent = store.isDemo ? "" : "The organizer still needs to set the dates.";
+    const now = phase();
+    $("log-button").hidden = now === "over";
+    $("board-title").textContent = now === "over" ? "Final leaderboard" : "Leaderboard";
+    if (now === "unset") {
+      $("event-status").textContent = "The organizer still needs to set the times for this challenge.";
+      $("pace-block").hidden = $("bar-pace").hidden = true;
       return;
     }
+    const { start, end, close } = eventTimes();
     const days = eventDays();
-    const today = localToday();
-    const range = `${shortDay(event.start_date)} to ${shortDay(event.end_date)}`;
-    const dayIndex = days.indexOf(today);
+    const dayIndex = days.indexOf(eventToday());
 
-    if (today < event.start_date) {
-      $("event-status").textContent = `Starts ${shortDay(event.start_date)}, ends ${shortDay(event.end_date)}`;
-    } else if (today > event.end_date) {
-      $("event-status").textContent = `Finished. Ran ${range}`;
-    } else {
-      $("event-status").textContent = `Day ${dayIndex + 1} of ${days.length}, ${range}`;
-    }
+    $("event-status").textContent = {
+      before: `Starts ${when(start)}, in ${timeLeft(start - Date.now())}. Ends ${when(end)}.`,
+      live: `Day ${dayIndex + 1} of ${days.length}. Ends ${when(end)}, in ${timeLeft(end - Date.now())}.`,
+      late: `Finished ${when(end)}. Climbs from before the end can be logged until ${clock(close)}.`,
+      over: `Finished. Ran from ${when(start)} to ${when(end)}.`,
+    }[now];
 
-    // Pace: the group's target by the end of today, assuming equal days.
-    const live = dayIndex !== -1;
-    $("pace-block").hidden = !live;
-    $("bar-pace").hidden = !live;
-    if (live) {
+    // Pace: the group's target by the end of today, with an equal share per day.
+    const showPace = now === "live" && dayIndex !== -1 && total < GOAL;
+    $("pace-block").hidden = !showPace;
+    $("bar-pace").hidden = !showPace;
+    if (showPace) {
+      const lastDay = dayIndex === days.length - 1;
       const target = (GOAL * (dayIndex + 1)) / days.length;
       $("bar-pace").style.left = `${(target / GOAL) * 100}%`;
       const gap = total - target;
       $("pace-main").textContent = gap >= 0 ? `${fmt(gap)} m ahead` : `${fmt(-gap)} m behind`;
-      $("pace-detail").textContent = `Tonight's target: ${fmt(target)} m (white mark)`;
+      $("pace-detail").textContent = `${lastDay ? `Target by ${clock(end)}` : "Tonight's target"}: ${fmt(target)} m (white mark)`;
     }
   }
 
@@ -646,6 +733,8 @@
     if (!tripMap.fitted && all.length) {
       tripMap.map.fitBounds(L.featureGroup(all).getBounds().pad(0.15), { maxZoom: 16 });
       tripMap.fitted = true;
+    } else if (!tripMap.fitted) {
+      tripMap.map.setView([config.mapStart.lat, config.mapStart.lng], config.mapStart.zoom);
     }
   }
 
@@ -705,7 +794,7 @@
   function fillDays() {
     const container = $("days");
     container.replaceChildren();
-    const today = localToday();
+    const today = eventToday();
     const days = eventDays();
     const allowed = days.filter((d) => d <= today);
     // Default to the latest allowed day, which is today during the challenge.
@@ -721,7 +810,7 @@
       label.append(input, el("span", null, dayOnly(iso)));
       container.append(label);
     });
-    return allowed.length > 0;
+    return allowed.length > 0 && (phase() === "live" || phase() === "late");
   }
 
   function fillPlaceChoices() {
@@ -775,9 +864,11 @@
     const canLog = fillDays();
     $("save-button").disabled = !canLog;
     if (!canLog) {
-      showError(state.event
-        ? `Logging opens on ${shortDay(state.event.start_date)}.`
-        : "The organizer still needs to set the dates.");
+      showError({
+        unset: "The organizer still needs to set the times for this challenge.",
+        before: state.event && `Logging opens ${when(eventTimes().start)}.`,
+        over: "The challenge is over, so logging is closed.",
+      }[phase()] || "Logging isn't open right now.");
     }
     $("log-dialog").showModal();
     if ($("who").value) $("meters").focus();
@@ -875,6 +966,7 @@
         participantId = person.id;
       }
       const result = await store.addEntry({
+        event_id: state.challenge.id, // the challenge on screen
         participant_id: participantId,
         meters,
         climbed_on: day.value,
@@ -906,18 +998,31 @@
 
 
   // ---------- Loading and live updates ----------
-  const upsertEntry = (entry) => state.entries.set(entry.id, entry);
+  // Every climb goes into allEntries. Climbs of the challenge on screen also go
+  // into entries, which is what the page draws.
+  const onScreen = (entry) => state.challenge && entry.event_id === state.challenge.id;
+  const upsertEntry = (entry) => {
+    state.allEntries.set(entry.id, entry);
+    if (onScreen(entry)) state.entries.set(entry.id, entry);
+    else state.entries.delete(entry.id);
+  };
   const removeEntry = (id) => {
+    state.allEntries.delete(id);
     state.entries.delete(id);
     tripMap.tracks.delete(id);
+  };
+  const pickEntries = () => {
+    state.entries = new Map([...state.allEntries].filter(([, entry]) => onScreen(entry)));
   };
 
   async function loadEverything() {
     const data = await store.load();
     state.isMember = data.isMember;
-    state.event = data.event;
+    state.events = new Map(data.events.map((event) => [event.id, event]));
+    state.event = state.challenge ? state.events.get(state.challenge.id) || null : null;
     state.participants = new Map(data.participants.map((p) => [p.id, p]));
-    state.entries = new Map(data.entries.map((e) => [e.id, e]));
+    state.allEntries = new Map(data.entries.map((e) => [e.id, e]));
+    pickEntries();
     state.lastLoaded = Date.now();
   }
 
@@ -979,6 +1084,9 @@
       renderFeed();
     });
     $("gate-form").addEventListener("submit", submitPassword);
+    window.addEventListener("hashchange", () => {
+      if (state.appShown && state.isMember) showChallenge(challengeFromLink() || defaultChallenge());
+    });
     $("sign-out").addEventListener("click", signOutHere);
   }
 
@@ -1065,23 +1173,90 @@
       return;
     }
 
-    // The marker starts at the bottom and climbs to the real total once.
-    state.previousTotal = totalMeters(); // no summit message for the initial load
-    renderBoard();
-    renderFeed();
-    renderStatus(totalMeters());
-    renderHero();
-
+    showChallenge(challengeFromLink() || defaultChallenge());
     store.subscribe(onLiveChange);
+
+    // The countdown, the day number and the phase change with the clock, not
+    // only with new climbs, so redraw the top of the page every 30 seconds.
+    setInterval(() => {
+      renderStatus(totalMeters());
+      renderMenu();
+    }, 30000);
+  }
+
+
+  // ---------- Switching challenges ----------
+  // The challenge in the link (#solar-system), if there is one.
+  function challengeFromLink() {
+    const slug = decodeURIComponent(location.hash.slice(1));
+    return config.challenges.find((c) => c.slug === slug) || null;
+  }
+
+  // The one that's running, or else the next to start, or else the latest to finish.
+  function defaultChallenge() {
+    const timed = config.challenges.filter((c) => state.events.has(c.id));
+    const times = (c) => eventTimes(state.events.get(c.id));
+    const inPhase = (...names) => timed.filter((c) => names.includes(phase(state.events.get(c.id))));
+    return inPhase("live", "late")[0]
+      || inPhase("before").sort((a, b) => times(a).start - times(b).start)[0]
+      || timed.sort((a, b) => times(b).end - times(a).end)[0]
+      || config.challenges[0];
+  }
+
+  const STATUS = { live: "now", late: "now", before: "upcoming", over: "finished", unset: "times not set" };
+
+  function renderMenu() {
+    const nav = $("challenge-nav");
+    nav.hidden = config.challenges.length < 2;
+    nav.replaceChildren(...config.challenges.map((challenge) => {
+      const link = el("a", null, challenge.name);
+      link.href = `#${challenge.slug}`;
+      if (challenge === state.challenge) link.setAttribute("aria-current", "page");
+      link.append(el("span", "nav-status", STATUS[phase(state.events.get(challenge.id) || null)]));
+      return link;
+    }));
+  }
+
+  // Draws a challenge from scratch: its ridge, its climbs, its leaderboard.
+  function showChallenge(challenge) {
+    let running = 0;
+    peaks = challenge.peaks.map((peak) => ({ ...peak, cumulative: (running += peak.height) }));
+    GOAL = running;
+    state.challenge = challenge;
+    state.event = state.events.get(challenge.id) || null;
+    pickEntries();
+    state.boardExpanded = false;
+    state.feedLimit = 12;
+    tripMap.fitted = false;
+    document.title = `${challenge.name}, ${config.siteName}`;
+    $("event-name").textContent = challenge.name;
+
+    // Swap the drawing without the finished look fading out or the route undrawing.
+    const hero = $("hero");
+    hero.classList.add("no-motion");
+    cancelAnimationFrame(climbMotion.frame);
+    climbMotion.shown = 0;
+    climbMotion.first = true; // the marker climbs from the bottom again
+    buildClimb();
+    hero.getBoundingClientRect(); // makes the browser apply the change before motion returns
+    hero.classList.remove("no-motion");
+
+    state.previousTotal = totalMeters(); // no summit messages for switching
+    renderMenu();
+    render();
   }
 
   async function start() {
-    document.title = config.eventName;
-    $("event-name").textContent = config.eventName;
-    $("gate-name").textContent = config.eventName;
+    document.title = config.siteName;
+    $("gate-name").textContent = config.siteName;
     $("gate-username").value = store.username;
     $("demo-note").hidden = !store.isDemo;
     if (store.isDemo) $("gate-hint").textContent = "Demo mode: any password works.";
+    // Draw something for the password screen before any data has loaded.
+    state.challenge = challengeFromLink() || config.challenges[0];
+    let running = 0;
+    peaks = state.challenge.peaks.map((peak) => ({ ...peak, cumulative: (running += peak.height) }));
+    GOAL = running;
     buildClimb();
     bindEvents();
     refreshOnReturn();

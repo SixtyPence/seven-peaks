@@ -31,13 +31,14 @@
       <p class="gate-error" id="gate-error" role="alert" hidden></p>
     </form>
   </div>
-  <svg class="gate-ridge" viewBox="0 0 1060 240" preserveAspectRatio="none" aria-hidden="true"><path id="gate-far-path" class="ridge-far"></path><path id="gate-ridge-path" class="ridge-rock"></path></svg>
+  <svg class="gate-ridge" viewBox="0 0 1000 240" preserveAspectRatio="none" aria-hidden="true"><path id="gate-far-path" class="ridge-far"></path><path id="gate-ridge-path" class="ridge-rock"></path></svg>
 </section>
 
 <div id="app" hidden>
 <!-- The hero: the whole challenge in one picture. -->
-<header class="hero">
+<header class="hero" id="hero">
   <div class="wrap hero-inner">
+    <nav class="challenge-nav" id="challenge-nav" aria-label="Challenges" hidden></nav>
     <div class="hero-top">
       <div>
         <h1 id="event-name">Seven Peaks Challenge</h1>
@@ -48,6 +49,7 @@
 
     <div class="readout">
       <div class="readout-main">
+        <p class="complete-banner">Challenge complete</p>
         <p class="big-number"><span id="total-climbed">0</span> m</p>
         <p class="readout-caption" id="goal-caption">climbed so far</p>
       </div>
@@ -59,13 +61,13 @@
 
     <div class="climb" id="climb">
       <div class="ridge" aria-hidden="true">
-        <svg id="ridge-base" viewBox="0 0 1060 240" preserveAspectRatio="none">
+        <svg id="ridge-base" viewBox="0 0 1000 240" preserveAspectRatio="none">
           <path id="ridge-far-path" class="ridge-far"></path>
           <path id="ridge-base-path" class="ridge-rock"></path>
           <path id="ridge-base-caps" class="ridge-caps"></path>
           <path id="ridge-base-shade" class="ridge-shade"></path>
         </svg>
-        <svg id="ridge-fill" viewBox="0 0 1060 240" preserveAspectRatio="none">
+        <svg id="ridge-fill" viewBox="0 0 1000 240" preserveAspectRatio="none">
           <defs>
             <linearGradient id="alpenglow" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stop-color="var(--glow-high)"></stop>
@@ -79,6 +81,12 @@
           <path id="ridge-fill-path" fill="url(#alpenglow)"></path>
           <path id="ridge-fill-caps" class="ridge-glow-caps"></path>
           <path id="ridge-fill-shade" class="ridge-shade"></path>
+        </svg>
+        <!-- The route over all seven summits, traced in gold when the goal is reached.
+             non-scaling-stroke keeps the line's width even though the drawing stretches. -->
+        <svg id="ridge-route" viewBox="0 0 1000 240" preserveAspectRatio="none">
+          <path id="route-halo" class="route-halo" vector-effect="non-scaling-stroke"></path>
+          <path id="route-line" class="route-line" vector-effect="non-scaling-stroke"></path>
         </svg>
         <div class="summit-ticks" id="summit-ticks"></div>
         <div id="summits"></div>
@@ -204,6 +212,7 @@
 <script src="vendor/leaflet.js"></script>
 <script src="vendor/supabase.js"></script>
 <script src="config.js"></script>
+<script src="challenges.js"></script>
 <script src="gpx.js"></script>
 <script src="store.js"></script>
 <script src="app.js"></script>

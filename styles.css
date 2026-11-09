@@ -35,6 +35,9 @@
   --bar-fill: #ff7a93;
   --pace: #ffffff;
   --hero-button: #ffb27a;
+
+  /* Once the group reaches the goal. Same in both themes, like the dusk. */
+  --gold: #ffd27d;
   --on-hero-button: #142440;
 
   --display: "Big Shoulders Display", "Arial Narrow", Impact, sans-serif;
@@ -109,6 +112,7 @@ a { color: inherit; }
 .demo-note { background: var(--glow-high); color: #142440; font-size: .9rem; padding-block: 6px; }
 
 
+
 /* ---------- Buttons ---------- */
 .button {
   font: 700 1rem/1.2 var(--body);
@@ -158,7 +162,25 @@ a { color: inherit; }
 
 /* ---------- Hero ---------- */
 .hero { background: linear-gradient(var(--sky-top), var(--sky-bottom)); color: var(--hero-ink); }
-.hero-inner { display: grid; gap: 20px; padding-block: 24px 28px; }
+.hero-inner { display: grid; gap: 20px; padding-block: 8px 28px; }
+
+/* The challenge menu: one link per challenge, the current one underlined. */
+.challenge-nav { display: flex; flex-wrap: wrap; gap: 0 24px; border-bottom: 1px solid rgb(255 255 255 / .14); }
+.challenge-nav a {
+  padding-block: 10px 8px;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  color: var(--hero-soft);
+  font-weight: 700;
+  font-size: .95rem;
+  text-decoration: none;
+}
+.challenge-nav a:hover { color: var(--hero-ink); }
+.challenge-nav a[aria-current="page"] { color: var(--hero-ink); border-bottom-color: var(--bar-fill); }
+.nav-status { margin-left: 6px; font-weight: 400; font-size: .8rem; opacity: .8; }
+
+/* Set for a moment while switching challenges, so nothing animates away. */
+.no-motion, .no-motion *, .no-motion *::before, .no-motion *::after { transition: none !important; animation: none !important; }
 .hero-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 h1 { font: 700 clamp(1.5rem, 1.2rem + 1.4vw, 2.1rem)/1.1 var(--display); letter-spacing: .01em; }
 .hero-dates { color: var(--hero-soft); margin-top: 2px; }
@@ -174,12 +196,10 @@ h1 { font: 700 clamp(1.5rem, 1.2rem + 1.4vw, 2.1rem)/1.1 var(--display); letter-
 
 
 /* ---------- The climb: ridge and bar share one horizontal scale ----------
-   The .climb padding leaves room for the ridge to fall away past the goal: the
-   drawing is 1060 wide with the goal at 1000, and 60 / 1060 = 5.66%. Everything
+   The drawing ends at the final summit, exactly where the bar ends. Everything
    inside .ridge is positioned in percent of the distance to the goal. */
-.climb { padding-right: 5.66%; }
 .ridge { position: relative; height: clamp(130px, 22vw, 250px); margin-top: 34px; }
-.ridge svg { position: absolute; top: 0; left: 0; width: 106%; height: 100%; display: block; overflow: visible; }
+.ridge svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block; overflow: visible; }
 .ridge-far { fill: var(--ridge-far); }
 .ridge-rock { fill: var(--ridge); }
 .ridge-caps { fill: var(--ridge-cap); }
@@ -208,6 +228,12 @@ h1 { font: 700 clamp(1.5rem, 1.2rem + 1.4vw, 2.1rem)/1.1 var(--display); letter-
 }
 .summit.reached .summit-name, .summit.current .summit-name { color: var(--hero-ink); }
 .summit.reached .summit-name { bottom: 23px; } /* makes room for the flag */
+/* Long names like "Maxwell Montes" switch to a short form when columns get narrow. */
+.name-short { display: none; }
+@media (max-width: 1000px) {
+  .summit-name.has-short .name-full { display: none; }
+  .summit-name.has-short .name-short { display: inline; }
+}
 
 /* A flag: a thin pole with a pennant, planted when the group reaches the summit. */
 .summit-flag {
@@ -232,6 +258,10 @@ h1 { font: 700 clamp(1.5rem, 1.2rem + 1.4vw, 2.1rem)/1.1 var(--display); letter-
   clip-path: polygon(0 0, 100% 50%, 0 100%);
 }
 .summit.reached .summit-flag { transform: scaleY(1); }
+
+/* The final summit is the right edge of the drawing, so its name and flag face inwards. */
+.summit.is-last .summit-name { transform: translateX(-100%); }
+.summit.is-last .summit-flag::after { left: auto; right: 2px; clip-path: polygon(100% 0, 0 50%, 100% 100%); }
 
 /* The group's position. JavaScript sets left and top as it climbs. */
 .climber { position: absolute; bottom: 0; width: 0; z-index: 1; }
@@ -262,22 +292,63 @@ h1 { font: 700 clamp(1.5rem, 1.2rem + 1.4vw, 2.1rem)/1.1 var(--display); letter-
 }
 .climber.label-above .climber-label { top: auto; bottom: calc(100% + 12px); }
 .climber.label-start .climber-label { left: -7px; transform: none; }
+.climber.label-end .climber-label { left: auto; right: -7px; transform: none; }
+
+/* ---------- Challenge complete ----------
+   As the marker reaches the last summit, the total and flags turn gold, the
+   banner appears, a gold line traces the route over all seven summits, and then
+   the flag on the final summit grows. */
+#ridge-route {
+  pointer-events: none;
+  clip-path: inset(-12px 100% -12px -12px); /* hidden: clipped from the right */
+  transition: clip-path 2.4s cubic-bezier(.45, 0, .2, 1);
+}
+.is-complete #ridge-route { clip-path: inset(-12px -12px -12px -12px); }
+.route-halo, .route-line { fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.route-halo { stroke: var(--sky-top); stroke-opacity: .5; stroke-width: 6px; } /* keeps gold readable on the orange peaks */
+.route-line { stroke: var(--gold); stroke-width: 2.5px; }
+
+.summit.is-last .summit-flag { transition: transform .3s ease-out, height .5s ease-out 2.2s; }
+.summit.is-last .summit-flag::after { transition: width .5s ease-out 2.2s, height .5s ease-out 2.2s; }
+.summit.is-last .summit-name { transition: bottom .5s ease-out 2.2s; }
+.is-complete .summit.is-last .summit-flag { height: 30px; }
+.is-complete .summit.is-last .summit-flag::after { width: 22px; height: 15px; }
+.is-complete .summit.is-last .summit-name { bottom: 33px; }
+
+.is-complete .summit-flag::after { background: var(--gold); }
+.is-complete .bar-fill { background: linear-gradient(90deg, var(--glow-low), var(--gold)); }
+.big-number { transition: color 1.6s ease; }
+.is-complete .big-number { color: var(--gold); }
+
+.complete-banner { display: none; font: 700 clamp(1.5rem, 1rem + 1.8vw, 2.3rem)/1.1 var(--display); color: var(--gold); margin-bottom: 4px; }
+.is-complete .complete-banner { display: block; animation: banner-in .9s ease .3s both; }
+@keyframes banner-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .summit-flag { transition: none; }
+  .summit-flag, .big-number { transition: none; }
+  #ridge-route, .summit.is-last .summit-flag, .summit.is-last .summit-flag::after, .summit.is-last .summit-name { transition: none; }
+  .is-complete .complete-banner { animation: none; }
 }
 
 .bar { position: relative; height: 18px; background: var(--bar-track); border-radius: 0 0 4px 4px; overflow: hidden; }
 .bar-fill { height: 100%; width: 0; background: var(--bar-fill); }
 .bar-pace { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1.5px; background: var(--pace); }
 
-/* Under the bar: the total at which the group reaches each summit. Each column
-   is exactly as wide as its peak's share of the goal. */
+/* Under the bar: the total at which the group reaches each summit, and when it
+   did (the summit register). Each column is exactly as wide as its peak's share
+   of the goal. */
 .peak-labels { display: grid; margin-top: 6px; }
 .peak-labels li { text-align: right; padding: 0 2px 0 10px; min-width: 0; color: var(--hero-soft); } /* the left padding keeps neighbours apart */
-.peak-continent, .peak-meta { display: block; font-size: .8rem; line-height: 1.3; }
-.peak-continent { font-weight: 700; }
+.peak-region, .peak-meta { display: block; font-size: .8rem; line-height: 1.3; }
+.peak-region { font-weight: 700; }
 .peak-labels li.reached, .peak-labels li.current { color: var(--hero-ink); }
+.peak-reached { display: none; font-size: .8rem; line-height: 1.3; }
+.peak-labels li.reached .peak-reached { display: block; }
+.peak-reached::before { content: "✓ "; color: var(--bar-fill); }
+.is-complete .peak-reached::before, .is-complete .route-list li.reached .route-name::before { color: var(--gold); }
 
 /* On a phone the peaks can't fit as columns, so they become a list. */
 .route-list { display: none; }
@@ -301,10 +372,17 @@ h1 { font: 700 clamp(1.5rem, 1.2rem + 1.4vw, 2.1rem)/1.1 var(--display); letter-
   }
   .route-list li:last-child { border-bottom: 0; }
   .route-list .route-name { font: 700 1.1rem/1.3 var(--display); }
-  .route-continent { margin-left: 8px; font-size: .82rem; opacity: .8; }
+  .route-region { margin-left: 8px; font-size: .82rem; opacity: .8; }
   .route-list li.reached, .route-list li.current { color: var(--hero-ink); }
   .route-list li.reached .route-name::before { content: "✓ "; color: var(--bar-fill); }
+  .route-right { text-align: right; }
+  .route-reached { display: block; font-size: .82rem; opacity: .8; }
+  .is-complete .summit.is-last .summit-flag { height: 22px; }
+  .is-complete .summit.is-last .summit-flag::after { width: 15px; height: 10px; }
   .hero .button-primary { padding: 10px 16px; }
+  .challenge-nav { gap: 0 16px; }
+  .challenge-nav a { font-size: .88rem; }
+  .nav-status { margin-left: 4px; }
 }
 
 
